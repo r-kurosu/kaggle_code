@@ -2,9 +2,8 @@ from cgi import test
 import numpy as np # linear algebra
 import pandas as pd # data processing, CSV file I/O (e.g. pd.read_csv)
 import os
-from sklearn import tree
+import sys
 import xgboost as xgb
-from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import GridSearchCV
 from sklearn.metrics import accuracy_score
@@ -49,6 +48,7 @@ def data_preprocessing(train, test):
     
     return train, test
 
+
 def find_best_alfa(target, train_prediction_prob):
     max_score = 0
     alfa_list = list(range(100))
@@ -62,32 +62,42 @@ def find_best_alfa(target, train_prediction_prob):
     return alfa
 
 
+def ht_xgb(train):
+    features_col = ["Pclass","Age","Sex","Fare", "SibSp", "Parch", "Embarked"]
+    x_train = train[features_col].values
+    target = train["Survived"].values
+    
+    ht_param = {
+                "max_depth": [i for i in range(4,7)],  # デフォルト6
+                "min_child_weight": [0, 0.5, 1, 1.5],  # デフォルト1
+                "eta": [0.05, 0.1, 0.15, 0.2],  # 0.01~0.2が多いらしい
+                "tree_method": ["exact"],
+                "predictor": ["cpu_predictor"],
+                "lambda": [1],  # 重みに関するL"正則 デフォルト1
+                "alpha": [0],  # 重みに関するL1正則  # デフォルト0
+                "subsample": [0.5, 0.7, 1],  # デフォルト1, 0~1
+                "max_delta_step": [1],
+                'objective': ['binary:logistic'],
+                "eval_metric": ["logloss"],  # 損失関数 l(y, a)
+                "seed": [0]
+            }
+
+    # #交差検証+グリッドサーチにより最良パラメータの検索
+    clf = GridSearchCV(xgb.XGBClassifier(), ht_param, cv=5, scoring="accuracy")
+    clf.fit(x_train, target)
+    print("最良パラメータ: {}".format(clf.best_params_))
+    print("最良交差検証スコア: {:.2f}".format(clf.best_score_))
+    
+    sys.exit()
+    
+    return 
+
+
 def xgb_model(train, test):
     features_col = ["Pclass","Age","Sex","Fare", "SibSp", "Parch", "Embarked"]
     x_train = train[features_col].values
     target = train["Survived"].values
     x_test = test[features_col].values
-    
-    ht_param = {
-                    "max_depth": [i for i in range(4,7)],  # デフォルト6
-                    "min_child_weight": [0, 0.5, 1, 1.5],  # デフォルト1
-                    "eta": [0.05, 0.1, 0.15, 0.2],  # 0.01~0.2が多いらしい
-                    "tree_method": ["exact"],
-                    "predictor": ["cpu_predictor"],
-                    "lambda": [1],  # 重みに関するL"正則 デフォルト1
-                    "alpha": [0],  # 重みに関するL1正則  # デフォルト0
-                    "subsample": [0.5, 0.7, 1],  # デフォルト1, 0~1
-                    "max_delta_step": [1],
-                    'objective': ['binary:logistic'],
-                    "eval_metric": ["logloss"],  # 損失関数 l(y, a)
-                    "seed": [0]
-                }
-
-    # #交差検証+グリッドサーチにより最良パラメータの検索
-    # clf = GridSearchCV(xgb.XGBClassifier(), ht_param, cv=5, scoring="accuracy")
-    # clf.fit(features, target)
-    # print("最良パラメータ: {}".format(clf.best_params_))
-    # print("最良交差検証スコア: {:.2f}".format(clf.best_score_))
 
     # train
     xgb_tree = xgb.XGBClassifier(
@@ -168,6 +178,8 @@ def main():
     
     train, test = data_preprocessing(train, test)
     
+    # ht_xgb(train)
+    
     train_prediction, test_prediction = xgb_model(train, test)
     # train_prediction, test_prediction = lgb_model(train, test)
     
@@ -176,7 +188,4 @@ def main():
     return
 
 if __name__ == "__main__":
-    train = pd.read_csv("../input/titanic/train.csv")
-    test = pd.read_csv("../input/titanic/test.csv")
-    
-    main(train, test)
+    main()
