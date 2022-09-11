@@ -1,8 +1,8 @@
-from cgi import test
 import numpy as np # linear algebra
 import pandas as pd # data processing, CSV file I/O (e.g. pd.read_csv)
 import os
 import sys
+from contextlib import redirect_stderr
 import xgboost as xgb
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import GridSearchCV
@@ -11,12 +11,52 @@ from sklearn import tree
 import lightgbm as lgb
 from sklearn.model_selection import GridSearchCV
 from sklearn.metrics import accuracy_score, log_loss
-
+import optuna
+from sklearn.model_selection import cross_validate, cross_val_predict, cross_val_score
 
 
 for dirname, _, filenames in os.walk('/kaggle/input'):
     for filename in filenames:
         print(os.path.join(dirname, filename))
+
+
+# optunaの目的関数を設定する
+def objective(trial, x_train, y_train):
+    eta =  trial.suggest_loguniform('eta', 1e-8, 1.0)
+    gamma = trial.suggest_loguniform('gamma', 1e-8, 1.0)
+    max_depth = trial.suggest_int('max_depth', 1, 20)
+    min_child_weight = trial.suggest_loguniform('min_child_weight', 1e-8, 1.0)
+    max_delta_step = trial.suggest_loguniform('max_delta_step', 1e-8, 1.0)
+    subsample = trial.suggest_uniform('subsample', 0.0, 1.0)
+    reg_lambda = trial.suggest_uniform('reg_lambda', 0.0, 1000.0)
+    reg_alpha = trial.suggest_uniform('reg_alpha', 0.0, 1000.0)
+
+
+    model =xgb.XGBClassifier(eta = eta, gamma = gamma, max_depth = max_depth,
+                           min_child_weight = min_child_weight, max_delta_step = max_delta_step,
+                           subsample = subsample,reg_lambda = reg_lambda,reg_alpha = reg_alpha)
+
+    score = cross_val_score(model, x_train, y_train, cv=5, scoring="accuracy")
+    accuracy_mean = score.mean()
+    print(accuracy_mean)
+
+    return accuracy_mean
+
+
+def use_optuna(train):
+    features_col = ["Pclass","Age","Sex","Fare", "SibSp", "Parch", "Embarked"]
+    x_train = train[features_col].values
+    target = train["Survived"].values
+    
+    optuna.logging.disable_default_handler()
+    study = optuna.create_study(direction='maximize')
+    study.optimize(lambda trial: objective(trial, x_train, target), n_trials=100)
+
+    # ベストパラメータを出力
+    print("params:", study.best_params)
+    print("best value: ", study.best_value)
+    
+    return study.best_params
 
 
 def kesson_table(df): 
@@ -93,25 +133,14 @@ def ht_xgb(train):
     return 
 
 
-def xgb_model(train, test):
+def xgb_model(train, test, best_params):
     features_col = ["Pclass","Age","Sex","Fare", "SibSp", "Parch", "Embarked"]
     x_train = train[features_col].values
     target = train["Survived"].values
     x_test = test[features_col].values
 
     # train
-    xgb_tree = xgb.XGBClassifier(
-        objective="binary:logistic",
-        eval_metric="logloss",
-        max_depth=5, 
-        min_child_weight=0.5, 
-        eta=0.1, 
-        alpha=0,
-        subsample=0.7,
-        learning_rate=0.01, 
-        n_estimators=50, 
-        random_state=3
-        )
+    xgb_tree = xgb.XGBClassifier(**best_params)
     xgb_tree.fit(x_train, target)
 
     train_prediction_prob = xgb_tree.predict(x_train)
@@ -176,11 +205,14 @@ def main():
     train = pd.read_csv("../input/titanic/train.csv")
     test = pd.read_csv("../input/titanic/test.csv")
     
-    train, test = data_preprocessing(train, test)
+    with redirect_stderr(open(os.devnull, 'w')):
+        train, test = data_preprocessing(train, test)
+    
+    best_params = use_optuna(train)
     
     # ht_xgb(train)
     
-    train_prediction, test_prediction = xgb_model(train, test)
+    train_prediction, test_prediction = xgb_model(train, test, best_params)
     # train_prediction, test_prediction = lgb_model(train, test)
     
     output_result(train, test, train_prediction, test_prediction)
