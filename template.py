@@ -1,8 +1,9 @@
+from pyexpat import model
 import numpy as np # linear algebra
 import pandas as pd # data processing, CSV file I/O (e.g. pd.read_csv)
 import os
 import sys
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 import xgboost as xgb
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import GridSearchCV
@@ -13,6 +14,7 @@ from sklearn.model_selection import GridSearchCV
 from sklearn.metrics import accuracy_score, log_loss
 import optuna
 from sklearn.model_selection import cross_validate, cross_val_predict, cross_val_score
+from sklearn.model_selection import train_test_split
 
 
 for dirname, _, filenames in os.walk('/kaggle/input'):
@@ -21,7 +23,7 @@ for dirname, _, filenames in os.walk('/kaggle/input'):
 
 
 # optunaの目的関数を設定する
-def objective(trial, x_train, y_train):
+def objective_xgb(trial, x_train, y_train):
     eta =  trial.suggest_loguniform('eta', 1e-8, 1.0)
     gamma = trial.suggest_loguniform('gamma', 1e-8, 1.0)
     max_depth = trial.suggest_int('max_depth', 1, 20)
@@ -43,20 +45,71 @@ def objective(trial, x_train, y_train):
     return accuracy_mean
 
 
-def use_optuna(train):
+def objective_lgb(trial, x_train, y_train):
+    from optuna.integration import lightgbm as lgb
+    
+    train_x, test_x, train_y, test_y = train_test_split(x_train, y_train, test_size=0.25)
+    dtrain = lgb.Dataset(train_x, label=train_y)
+    dtest = lgb.Dataset(test_x, label=test_y)
+    
+    param = {
+        'objective': 'binary',
+        'metric': 'binary_logloss',
+        'verbosity': -1,
+        'boosting_type': 'gbdt'
+        # 'lambda_l1': trial.suggest_loguniform('lambda_l1', 1e-8, 10.0),
+        # 'lambda_l2': trial.suggest_loguniform('lambda_l2', 1e-8, 10.0),
+        # 'num_leaves': trial.suggest_int('num_leaves', 2, 256),
+        # 'feature_fraction': trial.suggest_uniform('feature_fraction', 0.4, 1.0),
+        # 'bagging_fraction': trial.suggest_uniform('bagging_fraction', 0.4, 1.0),
+        # 'bagging_freq': trial.suggest_int('bagging_freq', 1, 7),
+        # 'min_child_samples': trial.suggest_int('min_child_samples', 5, 100),
+    }
+    
+    model = lgb.train(param, dtrain, valid_sets=dtest, early_stopping_rounds=100)
+    print("Best Params:", model.params)
+    
+    preds = model.predict(test_x)
+    pred_labels = np.rint(preds)
+    accuracy = accuracy_score(test_y, pred_labels)
+    
+    return accuracy
+
+
+def use_optuna_for_xgb(train):
     features_col = ["Pclass","Age","Sex","Fare", "SibSp", "Parch", "Embarked"]
     x_train = train[features_col].values
     target = train["Survived"].values
     
-    optuna.logging.disable_default_handler()
-    study = optuna.create_study(direction='maximize')
-    study.optimize(lambda trial: objective(trial, x_train, target), n_trials=100)
+    with redirect_stdout(open(os.devnull, 'w')):
+        optuna.logging.disable_default_handler()
+        study = optuna.create_study(direction='maximize')
+        study.optimize(lambda trial: objective_xgb(trial, x_train, target), n_trials=100)
 
     # ベストパラメータを出力
     print("params:", study.best_params)
     print("best value: ", study.best_value)
     
     return study.best_params
+
+
+def use_optuna_for_lgb(train):
+    features_col = ["Pclass","Age","Sex","Fare", "SibSp", "Parch", "Embarked"]
+    x_train = train[features_col].values
+    target = train["Survived"].values
+    
+    with redirect_stderr(open(os.devnull, 'w')):
+        optuna.logging.disable_default_handler()
+        study = optuna.create_study(direction='maximize')
+        # study.optimize(lambda trial: objective_lgb(trial, x_train, target), n_trials=100)
+        study.optimize(lambda trial: objective_lgb(trial, x_train, target), timeout=100) # degubのため時間制限
+        bestparams = study.best_trial.params
+
+    # ベストパラメータを出力
+    print("params:", study.best_params)
+    print("best value: ", study.best_value)
+    
+    return bestparams
 
 
 def kesson_table(df): 
@@ -154,7 +207,7 @@ def xgb_model(train, test, best_params):
     return train_prediction, test_prediction
 
 
-def lgb_model(train, test):
+def lgb_model(train, test, best_params):
     features_col = ["Pclass","Age","Sex","Fare", "SibSp", "Parch", "Embarked"]
     x_train = train[features_col].values
     target = train["Survived"].values
@@ -162,19 +215,8 @@ def lgb_model(train, test):
 
     lgb_train = lgb.Dataset(x_train, label=target)
 
-    ht_params = {"objective": "binary", 
-              "seed": 71, 
-              "verbose":0, 
-              "metrics":"binary_error",
-              "force_row_wise":True,
-              "num__leaves": 5,
-              "reg_alfa":0.1,
-              "reg_lambda":20,
-             }
-
-    num_round = 100
-
-    model = lgb.train(ht_params, lgb_train, num_boost_round=num_round)
+    # train
+    model = lgb.train(train_set=lgb_train, **best_params)
 
     train_prediction_prob = model.predict(x_train)
     test_prediction_prob = model.predict(x_test)
@@ -208,12 +250,14 @@ def main():
     with redirect_stderr(open(os.devnull, 'w')):
         train, test = data_preprocessing(train, test)
     
-    best_params = use_optuna(train)
-    
-    # ht_xgb(train)
-    
+    with redirect_stdout(open(os.devnull, 'w')):
+        best_params = use_optuna_for_xgb(train)
     train_prediction, test_prediction = xgb_model(train, test, best_params)
-    # train_prediction, test_prediction = lgb_model(train, test)
+    
+    with redirect_stdout(open(os.devnull, 'w')):
+        best_params = use_optuna_for_lgb(train)
+    print(best_params)
+    train_prediction, test_prediction = lgb_model(train, test, best_params)
     
     output_result(train, test, train_prediction, test_prediction)
     
