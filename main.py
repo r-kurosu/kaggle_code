@@ -1,7 +1,7 @@
 from curses.ascii import NUL
 from pyexpat import model
 from statistics import median
-import sys
+import sys, time
 import datetime, jpholiday
 from webbrowser import get
 import numpy as np
@@ -304,15 +304,13 @@ def check_old_error(YYYY, MM, DD, HH):
     df = df_compare.copy()
      
     ## 基準時DATETIMEを基に、対象のdfを抽出 (dfをどんどん更新) 
-    # 年, 月
     delete_index = []
     for i in range(len(df)):
-        if (df.loc[i, 'ds'].month != MM) or (df.loc[i, 'ds'].day != DD):
+        if (df.loc[i, 'ds'].month != MM) or (df.loc[i, 'ds'].day != DD) or (df.loc[i, 'ds'].hour != HH):
             delete_index.append(i)
         
     df.drop(delete_index, inplace=True)
     df.reset_index(inplace=True, drop=True)
-    # print(df)
     
     ## 日 (休日・平日)
     Date = datetime.datetime(YYYY,MM, DD, HH)
@@ -330,24 +328,17 @@ def check_old_error(YYYY, MM, DD, HH):
     df.drop(delete_index, inplace=True)
     df.reset_index(drop=True, inplace=True)
     
-    # # 時刻絞り
-    delete_index = []
-    for i in range(len(df)):
-        if df.loc[i, "ds"].hour != HH:
-            delete_index.append(i)
-    df.drop(delete_index, inplace=True)
-    df.reset_index(inplace=True, drop=True)
-    # print(df)
-    
-    # plt.plot(df['diff'])
-    # plt.show()
-    
     diff_list = [0]*len(df)
     for i in range(len(df)):
-        diff_list[i] = df.iloc[i, 1] - df.iloc[i, 2]
+        diff_list[i] = df.loc[i, "old_y"] - df.loc[i, "y"]
     df['diff'] = diff_list # 予測値-正解値
     
     ave_error = df["diff"].median()
+    if len(df) == 0:
+        ave_error = 0
+    
+    # plt.plot(df['diff'])
+    # plt.show()
     
     # for i in range(len(df)):
     #     df.loc[i, 'new_y'] = df.loc[i, 'y'] + ave_error
@@ -424,13 +415,23 @@ def main():
     old_error_costs = []
     cur_error_costs = []
     
-    for day in range(1, 32):
+    st_time = time.time()
+    
+    #TODO: 条件分岐
+    for day in range(1,32):
         for hour in range(24):
             # 予測日時
             YYYY = 2020
             MM = 11
             DD = day
             HH = hour
+            
+            #--------
+            if MM == 2 and day>28:
+                continue
+            elif (MM == 4 or MM == 6 or MM == 9 or MM == 11)and day>30:
+                continue
+            #--------
             print(f"{YYYY}-{MM}-{DD}-{HH}")
             
             ave = now_alg(YYYY, MM, DD, HH)
@@ -439,7 +440,7 @@ def main():
             # 新しい予測値の生成
             old_prediced_value = ave
             if error_ave > 0:
-                new_prediced_value = ave - error_ave
+                new_prediced_value = ave - error_ave #TODO: 修正誤差を1/2にする
             else:
                 new_prediced_value = ave - 2*error_ave
             
@@ -452,9 +453,12 @@ def main():
             # print(f" (new: {round(new_prediced_value, 2)}),\n (old: {round(ave, 2)}),\n (diff: {round(error_ave, 2)})")
 
     # 成績確認 
-    print(round(np.mean(new_error_costs)), "yen")
-    print(round(np.mean(old_error_costs)), "yen")
-    print(round(np.mean(cur_error_costs)), "yen")
+    print("-----------------------------------------------")
+    print(round(np.mean(new_error_costs)))
+    print(round(np.mean(old_error_costs)))
+    print(round(np.mean(cur_error_costs)))
+    
+    print(f"elapsed_time: {(time.time()-st_time):.1f} sec")
     
     return
 
